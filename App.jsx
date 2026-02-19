@@ -36,10 +36,18 @@ import {
   Server,
   Zap
 } from 'lucide-react';
+const firebaseConfig = {
+  apiKey: "AIzaSyCf_zHvN7B5FgMAErV9x2ii4ReQJN9J8Xs",
+  authDomain: "xai-sentinel-28720.firebaseapp.com",
+  projectId: "xai-sentinel-28720",
+  storageBucket: "xai-sentinel-28720.firebasestorage.app",
+  messagingSenderId: "914552217089",
+  appId: "1:914552217089:web:066dc9f2266be8a5f0ea00",
+  measurementId: "G-LD148BLW4W"
+};
 
 // --- CONFIGURATION & INITIALIZATION ---
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'xai-sentinel-pro-v1';
-const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
