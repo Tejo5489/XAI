@@ -1,9 +1,9 @@
-xgboost
-shap
 fastapi
 uvicorn
 pandas
 numpy
-scikit-learn
+xgboost
+shap
 firebase-admin
+scikit-learn
 python-multipart
