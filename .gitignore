@@ -1,0 +1,20 @@
+Dependencies
+
+node_modules/
+pycache/
+*.pyc
+.venv/
+env/
+dist/
+build/
+
+Firebase / Secrets (DO NOT REMOVE)
+
+service_account.json
+.env
+.env.local
+
+OS files
+
+.DS_Store
+Thumbs.db
