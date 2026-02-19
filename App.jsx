@@ -43,7 +43,7 @@ const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const apiKey = ""; 
+const apiKey = "AIzaSyDIxRIuYNwGf7GHW1OYVV_6YpLmkl6CoOM"; 
 
 // --- XGBOOST & XAI PIPELINE LOGIC ---
 /**
