@@ -1,0 +1,9 @@
+xgboost
+shap
+fastapi
+uvicorn
+pandas
+numpy
+scikit-learn
+firebase-admin
+python-multipart
