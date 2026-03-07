@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { initializeApp, getApps } from 'firebase/app';
 import { 
   getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged,
-  signOut 
+  onAuthStateChanged, 
+  signOut, 
+  GoogleAuthProvider, 
+  signInWithPopup 
 } from 'firebase/auth';
 import { 
   getFirestore, 
@@ -13,29 +13,38 @@ import {
   doc, 
   setDoc, 
   getDoc, 
-  addDoc, 
   onSnapshot, 
-  serverTimestamp,
-  query
+  addDoc, 
+  serverTimestamp 
 } from 'firebase/firestore';
 import { 
   Activity, 
-  MessageSquare, 
   ShieldAlert, 
-  History, 
-  ChevronRight, 
   Heart, 
   Thermometer, 
-  Droplets, 
-  Wind,
-  BrainCircuit,
-  Lock,
-  Sun,
-  Moon,
-  Info,
-  Server,
-  Zap
+  Wind, 
+  BrainCircuit, 
+  History, 
+  MessageSquare, 
+  FileText, 
+  Zap, 
+  AlertTriangle, 
+  ArrowUpRight, 
+  LogOut, 
+  Sun, 
+  Moon, 
+  Info, 
+  Server, 
+  Scale, 
+  Send, 
+  Loader2, 
+  Stethoscope, 
+  UserPlus, 
+  CheckCircle2, 
+  Lock 
 } from 'lucide-react';
+
+/** --- CONFIGURATION --- */
 const firebaseConfig = {
   apiKey: "AIzaSyCf_zHvN7B5FgMAErV9x2ii4ReQJN9J8Xs",
   authDomain: "xai-sentinel-28720.firebaseapp.com",
@@ -46,402 +55,505 @@ const firebaseConfig = {
   measurementId: "G-LD148BLW4W"
 };
 
-// --- CONFIGURATION & INITIALIZATION ---
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'xai-sentinel-pro-v1';
-const app = initializeApp(firebaseConfig);
+const GEMINI_API_KEY = ""; // Provided at runtime
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'xai-pro-elite';
+
+// Safely initialize Firebase
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 const auth = getAuth(app);
 const db = getFirestore(app);
-const apiKey = "AIzaSyDIxRIuYNwGf7GHW1OYVV_6YpLmkl6CoOM"; 
+const googleProvider = new GoogleAuthProvider();
 
-// --- XGBOOST & XAI PIPELINE LOGIC ---
-/**
- * ARCHITECTURAL NOTE:
- * In a production capstone, XGBoost runs in a Python/FastAPI environment.
- * The logic below simulates the "Tree Path" an XGBoost model takes,
- * calculating the log-odds that the SHAP explainer then decomposes.
- */
-const runXaiInference = (vitals, symptoms, mode = 'simulated') => {
-  // Base Risk (Intercept) - The average risk in the MIMIC-III training set
-  const baseValue = 0.18; 
-  let logOdds = 0;
-  const shapValues = [];
-
-  // 1. XGBoost Feature: Heart Rate (Tachycardia Threshold)
-  // XGBoost creates binary splits: Is HR > 100? If yes, traverse right child.
-  const hrWeight = vitals.heartRate > 100 ? (vitals.heartRate - 100) * 0.009 : -0.04;
-  logOdds += hrWeight;
-  shapValues.push({ feature: 'Heart Rate', phi: hrWeight, color: hrWeight > 0 ? 'text-red-500' : 'text-emerald-500' });
-
-  // 2. XGBoost Feature: Blood Pressure (Hypotension Indicator)
-  const bpWeight = vitals.bloodPressure < 90 ? (90 - vitals.bloodPressure) * 0.015 : -0.02;
-  logOdds += bpWeight;
-  shapValues.push({ feature: 'Blood Pressure', phi: bpWeight, color: bpWeight > 0 ? 'text-red-500' : 'text-emerald-500' });
-
-  // 3. XGBoost Feature: Oxygen Saturation (Heavily weighted in Gradient Boosting)
-  const o2Weight = vitals.oxygen < 94 ? (94 - vitals.oxygen) * 0.05 : -0.09;
-  logOdds += o2Weight;
-  shapValues.push({ feature: 'SpO2 Saturation', phi: o2Weight, color: o2Weight > 0 ? 'text-red-500' : 'text-emerald-500' });
-
-  // 4. XGBoost Feature: Infection Marker (Linear growth in risk probability)
-  const infWeight = vitals.infectionMarker > 3 ? (vitals.infectionMarker - 3) * 0.08 : -0.03;
-  logOdds += infWeight;
-  shapValues.push({ feature: 'Infection Marker', phi: infWeight, color: infWeight > 0 ? 'text-red-500' : 'text-emerald-500' });
-
-  // 5. Categorical Features (One-Hot Encoded Symptoms)
-  if (symptoms.pain) { logOdds += 0.14; shapValues.push({ feature: 'Pain Index', phi: 0.14, color: 'text-red-500' }); }
-  if (symptoms.breathless) { logOdds += 0.25; shapValues.push({ feature: 'Resp. Distress', phi: 0.25, color: 'text-red-500' }); }
-
-  // Logistic Sigmoid Function to convert Log-Odds to Probability (0-1)
-  const probability = 1 / (1 + Math.exp(-(logOdds + baseValue)));
-
-  // LIME Local Perturbation: Sensitivity of the current prediction to a 1-unit change in Heart Rate
-  const limeSensitivity = (vitals.heartRate > 100 ? 0.009 : 0.002);
-
-  return { 
-    probability, 
-    baseValue,
-    shapValues: shapValues.sort((a, b) => Math.abs(b.phi) - Math.abs(a.phi)),
-    limeSensitivity
-  };
-};
-
-// --- AUTH & ONBOARDING COMPONENTS ---
-
-const AuthPage = () => {
-  const handleAuth = async () => {
-    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-      await signInWithCustomToken(auth, __initial_auth_token);
-    } else {
-      await signInAnonymously(auth);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl text-center">
-        <div className="p-3 bg-blue-500/10 rounded-xl border border-blue-500/20 inline-block mb-6">
-          <ShieldAlert className="w-10 h-10 text-blue-500" />
-        </div>
-        <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">SENTINEL PORTAL</h1>
-        <div className="flex justify-center gap-2 mb-8">
-          <span className="px-2 py-1 bg-slate-800 rounded text-[10px] text-blue-400 font-bold border border-blue-500/20">XGBOOST</span>
-          <span className="px-2 py-1 bg-slate-800 rounded text-[10px] text-purple-400 font-bold border border-purple-500/20">SHAP</span>
-          <span className="px-2 py-1 bg-slate-800 rounded text-[10px] text-emerald-400 font-bold border border-emerald-500/20">LIME</span>
-        </div>
-        <button onClick={handleAuth} className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-blue-500/10">
-          INITIALIZE CLINICAL SYSTEM
-        </button>
-      </div>
-    </div>
-  );
-};
-
-const OnboardingFlow = ({ user, onComplete }) => {
-  const [step, setStep] = useState(1);
-  const [data, setData] = useState({ age: 45, height: 170, weight: 70 });
-
-  const finish = async () => {
-    const userRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data');
-    await setDoc(userRef, { ...data, setupComplete: true });
-    onComplete(data);
-  };
-
-  const currentStep = [
-    { k: 'age', l: 'Patient Age', d: 'XGBoost uses age as a primary metabolic weight.', min: 18, max: 110 },
-    { k: 'height', l: 'Height (cm)', d: 'Determines physiological resistance baselines.', min: 100, max: 250 },
-    { k: 'weight', l: 'Weight (kg)', d: 'Critical for sepsis volume calculations.', min: 30, max: 250 }
-  ][step-1];
-
-  return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl">
-        <div className="w-full bg-slate-800 h-1 rounded-full mb-8 overflow-hidden">
-          <div className="h-full bg-blue-500 transition-all" style={{ width: `${(step/3)*100}%` }}></div>
-        </div>
-        <h2 className="text-2xl font-bold text-white mb-2">{currentStep.l}</h2>
-        <p className="text-sm text-slate-400 mb-6">{currentStep.d}</p>
-        <input 
-          type="number" 
-          value={data[currentStep.k]} 
-          onChange={e => setData({...data, [currentStep.k]: parseInt(e.target.value)})}
-          className="w-full bg-slate-950 border-2 border-slate-800 p-4 rounded-xl text-white text-3xl focus:border-blue-500 outline-none mb-6 font-black"
-        />
-        <button 
-          onClick={() => step < 3 ? setStep(step + 1) : finish()} 
-          className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl flex justify-center items-center gap-2"
-        >
-          {step < 3 ? 'CONTINUE' : 'FINALIZE PROFILE'} <ChevronRight className="w-5 h-5" />
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// --- MAIN APPLICATION ---
-
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [profile, setProfile] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [theme, setTheme] = useState('dark');
-  const [engineMode, setEngineMode] = useState('Production'); // To simulate the Switch
-  
-  const [vitals, setVitals] = useState({ heartRate: 80, bloodPressure: 120, oxygen: 98, temperature: 37.0, infectionMarker: 1.0 });
-  const [symptoms, setSymptoms] = useState({ pain: false, breathless: false });
-  const [history, setHistory] = useState([]);
-  const [chat, setChat] = useState([{ role: 'ai', text: "Sentinel active. Connecting to XGBoost Inference Server..." }]);
-  const [isTyping, setIsTyping] = useState(false);
-
-  // The SHAP/LIME Engine Execution
-  const xai = useMemo(() => runXaiInference(vitals, symptoms), [vitals, symptoms]);
+// --- 3D NEURAL BACKGROUND COMPONENT ---
+const NeuralBackground = ({ riskProbability }) => {
+  const canvasRef = useRef(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, u => { setUser(u); if (!u) setLoading(false); });
+    const script = document.createElement('script');
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
+    script.onload = initThree;
+    document.head.appendChild(script);
+
+    let scene, camera, renderer, points;
+
+    function initThree() {
+      if (!canvasRef.current) return;
+      scene = new window.THREE.Scene();
+      camera = new window.THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+      renderer = new window.THREE.WebGLRenderer({ canvas: canvasRef.current, alpha: true, antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+      const geometry = new window.THREE.BufferGeometry();
+      const vertices = [];
+      for (let i = 0; i < 3000; i++) {
+        vertices.push(window.THREE.MathUtils.randFloatSpread(3000)); 
+        vertices.push(window.THREE.MathUtils.randFloatSpread(3000));
+        vertices.push(window.THREE.MathUtils.randFloatSpread(3000));
+      }
+      geometry.setAttribute('position', new window.THREE.Float32BufferAttribute(vertices, 3));
+      
+      const material = new window.THREE.PointsMaterial({ size: 2.5, color: 0x3b82f6, transparent: true, opacity: 0.35 });
+      points = new window.THREE.Points(geometry, material);
+      scene.add(points);
+
+      camera.position.z = 1000;
+
+      const animate = () => {
+        requestAnimationFrame(animate);
+        points.rotation.x += 0.0007;
+        points.rotation.y += 0.0007;
+        
+        const color = new window.THREE.Color();
+        color.lerpColors(new window.THREE.Color(0x3b82f6), new window.THREE.Color(0xef4444), riskProbability);
+        material.color = color;
+        points.rotation.y += 0.005 * riskProbability;
+
+        renderer.render(scene, camera);
+      };
+      animate();
+    }
+
+    const handleResize = () => {
+      if (!camera || !renderer) return;
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [riskProbability]);
+
+  return <canvas ref={canvasRef} className="fixed inset-0 pointer-events-none z-0" />;
+};
+
+// --- XAI RISK ENGINES ---
+const calculateShapValues = (vitals, profile = {}) => {
+  const age = parseFloat(profile.age) || 45;
+  const baseValue = 0.12 + (age > 65 ? 0.15 : 0); 
+  let logOdds = 0;
+  const features = [];
+
+  if (profile.weight && profile.height) {
+    const bmi = profile.weight / ((profile.height/100) ** 2);
+    const bmiWeight = bmi > 30 ? 0.09 : (bmi < 18.5 ? 0.06 : -0.02);
+    logOdds += bmiWeight;
+    features.push({ name: 'BMI Correlation', phi: bmiWeight, color: bmiWeight > 0 ? 'text-rose-400' : 'text-cyan-400' });
+  }
+
+  const hrWeight = vitals.hr > 100 ? (vitals.hr - 100) * 0.016 : -0.06;
+  logOdds += hrWeight;
+  features.push({ name: 'Heart Rate', phi: hrWeight, color: hrWeight > 0 ? 'text-rose-500' : 'text-cyan-400' });
+  
+  const o2Weight = vitals.o2 < 94 ? (94 - vitals.o2) * 0.12 : -0.15;
+  logOdds += o2Weight;
+  features.push({ name: 'Oxygen Saturation', phi: o2Weight, color: o2Weight > 0 ? 'text-rose-500' : 'text-cyan-400' });
+  
+  const bpWeight = vitals.bp < 90 ? 0.28 : (vitals.bp > 165 ? 0.18 : -0.08);
+  logOdds += bpWeight;
+  features.push({ name: 'Hemodynamics', phi: bpWeight, color: bpWeight > 0 ? 'text-rose-500' : 'text-cyan-400' });
+  
+  const probability = 1 / (1 + Math.exp(-(logOdds + baseValue)));
+  return { probability, features: features.sort((a, b) => Math.abs(b.phi) - Math.abs(a.phi)) };
+};
+
+// --- REUSABLE UI COMPONENTS ---
+const GlassCard = ({ children, title, icon: Icon, className = "", headerAction }) => (
+  <div className={`backdrop-blur-2xl bg-slate-900/50 border border-white/5 shadow-2xl rounded-[2.5rem] p-6 sm:p-8 flex flex-col transition-all hover:bg-slate-900/60 hover:border-white/10 ${className}`}>
+    <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center gap-3 opacity-80">
+        {Icon && <Icon className="w-4 h-4 text-blue-400" />}
+        <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-white/90">{title}</h2>
+      </div>
+      {headerAction}
+    </div>
+    {children}
+  </div>
+);
+
+const Slider = ({ label, val, min, max, unit, step = 1, onChange }) => (
+  <div className="group space-y-4">
+    <div className="flex justify-between items-baseline">
+      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest group-hover:text-blue-400 transition-colors">{label}</span>
+      <span className="text-sm font-black text-white">{val}<span className="text-[10px] ml-1 text-slate-500 font-medium">{unit}</span></span>
+    </div>
+    <div className="relative flex items-center h-4">
+      <input 
+        type="range" min={min} max={max} step={step} value={val} 
+        onChange={e => onChange(parseFloat(e.target.value))}
+        className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-white/10 accent-blue-500 outline-none hover:bg-white/20 transition-all"
+      />
+    </div>
+  </div>
+);
+
+// --- MAIN APPLICATION ---
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [vitals, setVitals] = useState({ hr: 82, bp: 118, o2: 98, temp: 37.0 });
+  const [profile, setProfile] = useState(null);
+  const [medicalRecord, setMedicalRecord] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [userInput, setUserInput] = useState("");
+  const chatEndRef = useRef(null);
+  const [intakeData, setIntakeData] = useState({ age: '', height: '', weight: '' });
+  const [isAuthProcessing, setIsAuthProcessing] = useState(false);
+
+  const xai = useMemo(() => calculateShapValues(vitals, profile || {}), [vitals, profile]);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, u => {
+      setUser(u);
+      if (u) {
+        setChatMessages([
+          { role: 'assistant', content: `Welcome back, ${u.displayName || 'Doctor'}. XAI neural links are stable. How shall we begin this clinical review?` }
+        ]);
+      }
+    });
     return () => unsubscribe();
   }, []);
 
+  // Sync Profile from Firestore
   useEffect(() => {
-    if (!user) return;
-    const fetchProfile = async () => {
-      const snap = await getDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'data'));
+    if (!db || !user) return;
+    const profileRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'metadata');
+    const unsubscribe = onSnapshot(profileRef, (snap) => {
       if (snap.exists()) setProfile(snap.data());
-      setLoading(false);
-    };
-    fetchProfile();
-
-    const q = collection(db, 'artifacts', appId, 'public', 'data', 'history');
-    return onSnapshot(q, (snap) => {
-      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-        .filter(d => d.userId === user.uid)
-        .sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
-      setHistory(docs);
     });
+    return () => unsubscribe();
   }, [user]);
 
-  const saveAssessment = async () => {
-    if (!user) return;
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'history'), {
-      userId: user.uid, timestamp: serverTimestamp(), risk: xai.probability, vitals, symptoms, mode: engineMode
-    });
-    setChat(prev => [...prev, { role: 'ai', text: "✓ Audit log synchronized. Model ID: XGB_MIMIC_v1.0" }]);
+  useEffect(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), [chatMessages]);
+
+  const signInWithGoogle = async () => {
+    setIsAuthProcessing(true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      console.error("Auth Error:", err);
+    } finally {
+      setIsAuthProcessing(false);
+    }
   };
 
-  const handleChat = async (input) => {
-    if (!input.trim()) return;
-    setChat(prev => [...prev, { role: 'user', text: input }]);
-    setIsTyping(true);
+  const handleProfileSubmit = async (e) => {
+    e.preventDefault();
+    if (!intakeData.age || !intakeData.height || !intakeData.weight || !user) return;
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile', 'metadata');
+      await setDoc(docRef, { ...intakeData, lastUpdated: serverTimestamp() });
+    } catch (err) { console.error(err); }
+  };
 
-    const lower = input.toLowerCase();
-    if (lower.includes("pain")) setSymptoms(s => ({...s, pain: true}));
-    if (lower.includes("breath")) setSymptoms(s => ({...s, breathless: true}));
+  const handleSendMessage = async (customPrompt = null) => {
+    const input = customPrompt || userInput;
+    if (!input.trim() || isAnalyzing) return;
+
+    const newMessages = [...chatMessages, { role: 'user', content: input }];
+    setChatMessages(newMessages);
+    setUserInput("");
+    setIsAnalyzing(true);
 
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `
-            Role: Clinical XAI Assistant. 
-            Tech: XGBoost Prediction + SHAP Explanation.
-            Patient Info: Age ${profile?.age}. 
-            Vitals: HR ${vitals.heartRate}, O2 ${vitals.oxygen}. 
-            XGBoost Probability: ${(xai.probability * 100).toFixed(0)}%. 
-            Primary SHAP Driver: ${xai.shapValues[0]?.feature}.
-            Clinician says: "${input}"
-            
-            Instruction: Explain how the clinician's observation affects the decision tree logic. Be brief (2 sentences).
-          ` }] }]
-        })
-      });
-      const result = await response.json();
-      setChat(prev => [...prev, { role: 'ai', text: result.candidates?.[0]?.content?.parts?.[0]?.text || "Risk profile recalculated." }]);
-    } catch {
-      setChat(prev => [...prev, { role: 'ai', text: "Observation logged. XGBoost risk updated." }]);
-    } finally { setIsTyping(false); }
+      const systemInstruction = `
+        You are Dr. XAI, a Chief Medical Officer and Specialist in Explainable AI.
+        You provide high-fidelity medical consultation with the accuracy and depth of a world-class physician.
+        
+        PATIENT PARAMETERS:
+        - Age: ${profile?.age || 'Unset'}, Weight: ${profile?.weight || 'Unset'}kg, Height: ${profile?.height || 'Unset'}cm.
+        - Vitals: Heart Rate ${vitals.hr} bpm, Blood Pressure ${vitals.bp} mmHg, SpO2 ${vitals.o2}%.
+        - Current Risk Probability: ${(xai.probability * 100).toFixed(0)}%.
+        - Primary Driver (SHAP): ${xai.features[0].name} contributing ${(xai.features[0].phi * 100).toFixed(1)}% to the variance.
+        - Medical History Context: ${medicalRecord || 'None provided.'}
+        
+        MANDATE:
+        1. Speak professionally using clinical terminology (hemodynamics, hypoxemia, tachycardia).
+        2. Correlate current vitals with history and physical profile.
+        3. Explain the AI's "Black Box" reasoning using the SHAP data.
+        4. Suggest specific stabilization steps or further tests (ABG, ECG, Lab work).
+      `;
+
+      // Formatting for Gemini API
+      const contents = newMessages.map(m => ({ 
+        role: m.role === 'assistant' ? 'model' : 'user', 
+        parts: [{ text: m.content }] 
+      }));
+
+      const callWithBackoff = async (attempt = 0) => {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            contents,
+            systemInstruction: { parts: [{ text: systemInstruction }] }
+          })
+        });
+        
+        if (!response.ok && attempt < 5) {
+          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+          return callWithBackoff(attempt + 1);
+        }
+        return response.json();
+      };
+
+      const res = await callWithBackoff();
+      const aiText = res.candidates?.[0]?.content?.parts?.[0]?.text || "Clinical analysis in progress...";
+      setChatMessages([...newMessages, { role: 'assistant', content: aiText }]);
+    } catch (e) {
+      setChatMessages([...newMessages, { role: 'assistant', content: "XAI uplink disrupted. Check clinical credentials." }]);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
-  if (loading) return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500 font-mono text-xs tracking-widest">CONNECTING TO CLOUD DB...</div>;
-  if (!user) return <AuthPage />;
-  if (!profile) return <OnboardingFlow user={user} onComplete={setProfile} />;
+  // LOGIN PAGE
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
+        <NeuralBackground riskProbability={0.15} />
+        <div className="relative z-10 space-y-8 max-w-lg">
+          <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-[2.5rem] flex items-center justify-center mx-auto shadow-2xl shadow-blue-500/40">
+            <ShieldAlert className="w-10 h-10 text-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-black uppercase tracking-[0.5em] text-white">XAI <span className="text-blue-500">Elite</span></h1>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-4 leading-relaxed px-10">
+              Advanced Clinical Decision Support & Explainable AI for Critical Care Environments.
+            </p>
+          </div>
+          <button 
+            onClick={signInWithGoogle}
+            disabled={isAuthProcessing}
+            className="w-full py-5 bg-white text-slate-950 text-[10px] font-black uppercase tracking-[0.2em] rounded-3xl transition-all hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-4 shadow-2xl"
+          >
+            {isAuthProcessing ? <Loader2 className="w-4 h-4 animate-spin"/> : <Lock className="w-4 h-4 text-blue-600"/>}
+            Secure Google Login
+          </button>
+          <p className="text-[9px] font-bold text-slate-600 uppercase tracking-widest">Authorized Clinical Personnel Only</p>
+        </div>
+      </div>
+    );
+  }
 
-  const tClass = theme === 'dark' ? 'bg-slate-950 text-white border-slate-800' : 'bg-white text-slate-900 border-slate-200';
-  const cClass = theme === 'dark' ? 'bg-slate-900/50 border-slate-800' : 'bg-slate-50 border-slate-200';
+  // INTAKE OVERLAY
+  if (user && !profile) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+        <NeuralBackground riskProbability={0.2} />
+        <GlassCard title="Clinical Intake: Patient Baseline" icon={UserPlus} className="max-w-md w-full relative z-10">
+          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-10 leading-relaxed">
+            Specify patient metrics to calibrate the XAI risk engine for this session.
+          </p>
+          <form onSubmit={handleProfileSubmit} className="space-y-8">
+            <div className="space-y-3">
+              <label className="text-[9px] font-black uppercase tracking-tighter text-blue-500">Patient Age</label>
+              <input 
+                type="number" required value={intakeData.age}
+                onChange={e => setIntakeData({...intakeData, age: e.target.value})}
+                placeholder="Years"
+                className="w-full bg-white/5 border border-white/10 rounded-2xl p-5 text-sm font-bold outline-none focus:border-blue-500 transition-all"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-6">
+              <div className="space-y-3">
+                <label className="text-[9px] font-black uppercase tracking-tighter text-blue-500">Height (cm)</label>
+                <input 
+                  type="number" required value={intakeData.height}
+                  onChange={e => setIntakeData({...intakeData, height: e.target.value})}
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl p-5 text-sm font-bold outline-none focus:border-blue-500 transition-all"
+                />
+              </div>
+              <div className="space-y-3">
+                <label className="text-[9px] font-black uppercase tracking-tighter text-blue-500">Weight (kg)</label>
+                <input 
+                  type="number" required value={intakeData.weight}
+                  onChange={e => setIntakeData({...intakeData, weight: e.target.value})}
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl p-5 text-sm font-bold outline-none focus:border-blue-500 transition-all"
+                />
+              </div>
+            </div>
+            <button type="submit" className="w-full py-5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black uppercase tracking-widest rounded-3xl transition-all shadow-xl shadow-blue-500/30">
+              Initialize XAI Engine
+            </button>
+          </form>
+        </GlassCard>
+      </div>
+    );
+  }
 
   return (
-    <div className={`min-h-screen ${tClass} font-sans selection:bg-blue-500/30`}>
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
+      <NeuralBackground riskProbability={xai.probability} />
+
       {/* NAVBAR */}
-      <nav className={`sticky top-0 z-50 px-6 py-4 border-b ${cClass} backdrop-blur-md flex justify-between items-center`}>
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center">
-            <ShieldAlert className="text-white w-5 h-5" />
+      <nav className="fixed top-0 w-full z-[60] backdrop-blur-2xl border-b border-white/5 px-8 py-4 flex justify-between items-center bg-slate-950/40">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
+            <ShieldAlert className="w-6 h-6 text-white" />
           </div>
-          <div className="flex flex-col">
-            <h1 className="font-black text-xs tracking-tighter uppercase leading-none">Sentinel XAI</h1>
-            <span className="text-[9px] text-blue-500 font-bold">XGBOOST INFERENCE ACTIVE</span>
+          <div>
+            <h1 className="text-xs font-black uppercase tracking-[0.4em] leading-none">XAI <span className="text-blue-500">Elite</span></h1>
+            <p className="text-[8px] font-bold text-slate-500 uppercase tracking-widest mt-1">Provider: {user.displayName}</p>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex bg-slate-800 p-1 rounded-lg">
-            <button onClick={() => setEngineMode('Sim')} className={`px-3 py-1 text-[10px] font-bold rounded ${engineMode === 'Sim' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>SIM</button>
-            <button onClick={() => setEngineMode('Prod')} className={`px-3 py-1 text-[10px] font-bold rounded ${engineMode === 'Prod' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>PROD</button>
+        <div className="flex items-center gap-6">
+          <div className="hidden lg:flex items-center gap-4 px-5 py-2.5 bg-white/5 border border-white/10 rounded-full">
+             <div className="flex items-center gap-2 pr-4 border-r border-white/10">
+                <Stethoscope className="w-3 h-3 text-blue-500" />
+                <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Clinical Mode</span>
+             </div>
+             <span className="text-[9px] font-black text-white uppercase tracking-tighter">Age {profile.age} / {profile.weight}kg</span>
           </div>
-          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="p-2 hover:bg-slate-800 rounded-lg">
-            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          <button onClick={() => signOut(auth)} className="flex items-center gap-2 p-2 px-4 hover:bg-red-500/10 rounded-2xl transition-all text-slate-500 hover:text-red-500 border border-transparent hover:border-red-500/20">
+            <LogOut className="w-4 h-4" />
+            <span className="text-[9px] font-black uppercase tracking-widest">Logoff</span>
           </button>
-          <button onClick={() => signOut(auth)} className="text-slate-500 hover:text-red-400"><LogOut className="w-5 h-5" /></button>
         </div>
       </nav>
 
-      <main className="p-6 max-w-[1600px] mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* INPUTS */}
-        <section className="lg:col-span-3 space-y-6">
-          <div className={`${cClass} border p-6 rounded-2xl`}>
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Sensor Stream</h3>
-              <Server className="w-3 h-3 text-slate-600" />
-            </div>
-            <div className="space-y-6">
-              <VitalSlider label="Heart Rate" val={vitals.heartRate} min={40} max={200} icon={<Heart className="text-red-500 w-4 h-4"/>} onChange={v => setVitals({...vitals, heartRate: v})} />
-              <VitalSlider label="Blood Pressure" val={vitals.bloodPressure} min={60} max={220} icon={<Activity className="text-blue-500 w-4 h-4"/>} onChange={v => setVitals({...vitals, bloodPressure: v})} />
-              <VitalSlider label="Oxygen Sat" val={vitals.oxygen} min={50} max={100} icon={<Wind className="text-emerald-500 w-4 h-4"/>} onChange={v => setVitals({...vitals, oxygen: v})} />
-              <VitalSlider label="Temperature" val={vitals.temperature} min={34} max={42} step={0.1} icon={<Thermometer className="text-amber-500 w-4 h-4"/>} onChange={v => setVitals({...vitals, temperature: v})} />
-              <VitalSlider label="Infection CRP" val={vitals.infectionMarker} min={0} max={20} icon={<Droplets className="text-purple-500 w-4 h-4"/>} onChange={v => setVitals({...vitals, infectionMarker: v})} />
-            </div>
-            
-            <div className="mt-8 pt-6 border-t border-slate-800">
-              <h4 className="text-[10px] font-bold text-slate-500 uppercase mb-4">Subjective Indicators</h4>
-              <div className="grid grid-cols-1 gap-2">
-                <SymptomBtn active={symptoms.pain} label="Acute Pain" onClick={() => setSymptoms({...symptoms, pain: !symptoms.pain})} />
-                <SymptomBtn active={symptoms.breathless} label="Resp. Distress" onClick={() => setSymptoms({...symptoms, breathless: !symptoms.breathless})} />
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ANALYSIS */}
-        <section className="lg:col-span-5 space-y-6">
-          <div className={`${cClass} border p-10 rounded-3xl text-center relative overflow-hidden group`}>
-            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform"><BrainCircuit className="w-32 h-32"/></div>
-            <h2 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">XGBoost Risk Score</h2>
-            <div className={`text-9xl font-black tabular-nums transition-all ${xai.probability > 0.6 ? 'text-red-500' : 'text-blue-500'}`}>
-              {(xai.probability * 100).toFixed(0)}<span className="text-3xl text-slate-700">%</span>
-            </div>
-            <div className="flex justify-center gap-2 mt-4">
-              <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${xai.probability > 0.6 ? 'bg-red-500 text-white' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'}`}>
-                {xai.probability > 0.6 ? '⚠️ Clinical Emergency' : '✓ Status Stable'}
-              </span>
-              <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1">
-                <Zap className="w-2 h-2 text-yellow-500" /> LATENCY: 42ms
-              </span>
-            </div>
-            <div className="mt-8 flex gap-3">
-              <button onClick={saveAssessment} className="flex-1 py-4 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold transition-all active:scale-95">SYNC AUDIT</button>
-              <button className="flex-1 py-4 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold transition-all shadow-lg shadow-blue-500/20 active:scale-95">WARD CALL</button>
-            </div>
-          </div>
-
-          <div className={`${cClass} border p-6 rounded-2xl`}>
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="font-bold text-sm uppercase tracking-wider flex items-center gap-2">
-                <BrainCircuit className="w-4 h-4 text-purple-500" /> SHAP Rationale
-              </h3>
-              <Info className="w-4 h-4 text-slate-600 cursor-help" />
-            </div>
-            
-            <div className="space-y-5">
-              {xai.shapValues.map((s, idx) => (
-                <div key={idx} className="space-y-1">
-                  <div className="flex justify-between text-[10px] font-bold">
-                    <span className="text-slate-400 uppercase">{s.feature}</span>
-                    <span className={s.color}>{s.phi > 0 ? '+' : ''}{(s.phi * 100).toFixed(1)}%</span>
-                  </div>
-                  <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden flex">
-                    {s.phi > 0 ? (
-                      <div className="h-full bg-red-500 ml-[50%]" style={{ width: `${Math.abs(s.phi) * 100}%` }}></div>
-                    ) : (
-                      <div className="h-full bg-emerald-500 flex-1 flex justify-end">
-                        <div className="bg-emerald-500 h-full" style={{ width: `${Math.abs(s.phi) * 100}%` }}></div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-8 pt-6 border-t border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Activity className="w-4 h-4 text-blue-500" />
-                <span className="text-[10px] font-bold text-slate-400 uppercase">LIME Sensitivity</span>
-              </div>
-              <span className="text-[10px] font-mono font-bold text-emerald-400">
-                ± {(xai.limeSensitivity * 100).toFixed(1)}% per 1 BPM shift
-              </span>
-            </div>
-          </div>
-        </section>
-
-        {/* CHAT */}
-        <section className="lg:col-span-4 space-y-6">
-          <div className={`${cClass} border h-[550px] rounded-3xl overflow-hidden flex flex-col`}>
-            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-800/20">
-              <span className="text-xs font-bold uppercase tracking-widest">Clinical Console</span>
-              <MessageSquare className="w-4 h-4 text-slate-600" />
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {chat.map((m, i) => (
-                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-4 rounded-2xl text-[11px] leading-relaxed font-medium ${m.role === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-slate-800 text-slate-200 rounded-bl-none border border-slate-700'}`}>
-                    {m.text}
-                  </div>
-                </div>
-              ))}
-              {isTyping && <div className="text-[10px] text-slate-600 animate-pulse pl-2 font-bold">SENTINEL IS RECALCULATING...</div>}
-            </div>
-            <div className="p-4 bg-slate-900 border-t border-slate-800">
-              <input 
-                type="text" 
-                placeholder="Ask model logic or log patient status..."
-                onKeyDown={e => { if (e.key === 'Enter') { handleChat(e.target.value); e.target.value = ''; }}}
-                className="w-full bg-slate-950 border border-slate-800 p-4 rounded-xl text-xs text-white outline-none focus:border-blue-500 transition-all"
+      {/* MAIN CONTENT */}
+      <main className="relative z-10 pt-32 pb-16 px-6 sm:px-12 max-w-[1700px] mx-auto">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
+          
+          <div className="lg:col-span-3 space-y-8">
+            <GlassCard title="Clinical Record" icon={FileText}>
+              <textarea 
+                value={medicalRecord}
+                onChange={e => setMedicalRecord(e.target.value)}
+                placeholder="Paste longitudinal notes..."
+                className="w-full h-40 bg-transparent border-none text-[11px] placeholder:text-slate-700 focus:ring-0 resize-none font-medium leading-relaxed custom-scrollbar"
               />
-            </div>
+              <button 
+                onClick={() => handleSendMessage("Dr. XAI, I need a diagnostic impression of this clinical history.")}
+                className="mt-6 w-full py-4 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 text-[10px] font-black uppercase tracking-widest rounded-2xl transition-all border border-blue-500/20"
+              >
+                Ingest Record
+              </button>
+            </GlassCard>
+
+            <GlassCard title="Live Telemetry" icon={Activity}>
+              <div className="space-y-12 py-4">
+                <Slider label="Heart Rate" val={vitals.hr} min={40} max={180} unit="BPM" onChange={v => setVitals({...vitals, hr: v})} />
+                <Slider label="Blood Pressure" val={vitals.bp} min={60} max={220} unit="mmHg" onChange={v => setVitals({...vitals, bp: v})} />
+                <Slider label="Oxygen Sat" val={vitals.o2} min={70} max={100} unit="%" onChange={v => setVitals({...vitals, o2: v})} />
+                <Slider label="Body Temp" val={vitals.temp} min={34} max={42} step={0.1} unit="°C" onChange={v => setVitals({...vitals, temp: v})} />
+              </div>
+            </GlassCard>
           </div>
 
-          <div className={`${cClass} border p-5 rounded-2xl`}>
-            <h3 className="text-[10px] font-bold text-slate-500 uppercase mb-4 flex items-center gap-2">Longitudinal Audit</h3>
-            <div className="space-y-2 max-h-[110px] overflow-y-auto">
-              {history.map((h, i) => (
-                <div key={i} className="p-3 bg-slate-950 border border-slate-800 rounded-lg flex justify-between items-center group hover:border-slate-600 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-1.5 h-1.5 rounded-full ${h.risk > 0.6 ? 'bg-red-500' : 'bg-emerald-500'}`}></div>
-                    <span className="text-[10px] font-bold text-slate-300">{(h.risk * 100).toFixed(0)}% Score</span>
-                  </div>
-                  <span className="text-[9px] text-slate-600 uppercase font-black">{new Date(h.timestamp?.seconds * 1000).toLocaleTimeString()}</span>
+          <div className="lg:col-span-5 space-y-10">
+            <div className="relative p-12 sm:p-20 backdrop-blur-3xl bg-white/5 border border-white/10 rounded-[4rem] flex flex-col items-center justify-center text-center group transition-all overflow-hidden shadow-2xl">
+              <div className={`absolute inset-0 bg-gradient-to-b ${xai.probability > 0.7 ? 'from-rose-500/20' : 'from-blue-500/10'} to-transparent pointer-events-none opacity-40`} />
+              <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.6em] mb-8">Clinical Deterioration Risk</h3>
+              <div className={`text-[10rem] sm:text-[13rem] leading-none font-black tracking-tighter transition-all duration-700 ${xai.probability > 0.7 ? 'text-rose-500 drop-shadow-[0_0_80px_rgba(244,63,94,0.4)]' : 'text-blue-500 drop-shadow-[0_0_80px_rgba(59,130,246,0.3)]'}`}>
+                {(xai.probability * 100).toFixed(0)}%
+              </div>
+              <div className="mt-14 flex gap-12 items-center">
+                <div className="text-center">
+                  <div className="text-3xl font-black">{vitals.hr}</div>
+                  <div className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mt-1">BPM</div>
                 </div>
-              ))}
+                <div className="h-16 w-px bg-white/10" />
+                <div className="text-center">
+                  <div className="text-3xl font-black">{vitals.o2}%</div>
+                  <div className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mt-1">SPO2</div>
+                </div>
+              </div>
             </div>
-          </div>
-        </section>
 
+            <GlassCard title="XAI Decision Drivers (SHAP)" icon={BrainCircuit}>
+              <div className="space-y-8">
+                {xai.features.map((f, i) => (
+                  <div key={i} className="space-y-3">
+                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest">
+                      <span className="text-slate-400">{f.name}</span>
+                      <span className={f.color}>{f.phi > 0 ? '+' : ''}{(f.phi * 100).toFixed(1)}% Contribution</span>
+                    </div>
+                    <div className="h-2 bg-white/5 rounded-full overflow-hidden flex shadow-inner">
+                      <div 
+                        className={`h-full transition-all duration-1000 ${f.phi > 0 ? 'bg-rose-500 ml-[50%] shadow-[0_0_20px_rgba(244,63,94,0.5)]' : 'bg-cyan-400 ml-auto mr-[50%] shadow-[0_0_20px_rgba(34,211,238,0.5)]'}`}
+                        style={{ width: `${Math.abs(f.phi) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </GlassCard>
+          </div>
+
+          <div className="lg:col-span-4 h-full flex flex-col">
+            <GlassCard 
+              title="Dr. XAI: Elite Rounds" 
+              icon={Bot} 
+              className="flex-1 min-h-[600px] sm:min-h-[800px]"
+              headerAction={
+                <button onClick={() => setChatMessages([])} className="text-[8px] font-black text-slate-600 hover:text-white transition-colors uppercase tracking-widest">Clear Log</button>
+              }
+            >
+              <div className="flex-1 overflow-y-auto pr-2 space-y-6 custom-scrollbar mb-8 max-h-[500px] sm:max-h-[700px]">
+                {chatMessages.map((m, i) => (
+                  <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[90%] p-6 rounded-[2rem] text-[11px] leading-relaxed ${m.role === 'user' ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/20 font-medium' : 'bg-white/5 text-slate-300 border border-white/5 font-medium shadow-inner'}`}>
+                      {m.content.split('\n').map((line, j) => <p key={j} className="mb-2 last:mb-0">{line}</p>)}
+                    </div>
+                  </div>
+                ))}
+                {isAnalyzing && (
+                  <div className="flex justify-start">
+                    <div className="flex items-center gap-3 px-6 py-4 bg-white/5 rounded-3xl border border-white/5 shadow-lg">
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                      <span className="text-[10px] font-black uppercase text-slate-500 tracking-[0.2em]">Consulting XAI Brain...</span>
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+              
+              <div className="mt-auto relative">
+                <input 
+                  type="text"
+                  value={userInput}
+                  onChange={e => setUserInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSendMessage()}
+                  placeholder="Ask Dr. XAI for a diagnosis..."
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl p-6 pr-16 text-xs outline-none focus:border-blue-500 transition-all font-medium placeholder:text-slate-700"
+                />
+                <button 
+                  onClick={() => handleSendMessage()} 
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-3 bg-blue-600 rounded-2xl hover:bg-blue-500 transition-all active:scale-95 shadow-xl shadow-blue-500/40"
+                >
+                  <Send className="w-5 h-5 text-white" />
+                </button>
+              </div>
+            </GlassCard>
+          </div>
+        </div>
       </main>
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 10px; }
+        
+        input[type=range]::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          height: 20px;
+          width: 20px;
+          border-radius: 50%;
+          background: #3b82f6;
+          cursor: pointer;
+          box-shadow: 0 0 20px rgba(59,130,246,0.7);
+          transition: all 0.2s;
+          border: 2px solid white;
+        }
+        input[type=range]::-webkit-slider-thumb:hover { 
+          transform: scale(1.2); 
+          box-shadow: 0 0 30px rgba(59,130,246,0.9);
+        }
+      `}</style>
     </div>
   );
 }
 
-const VitalSlider = ({ label, val, unit, min, max, step = 1, icon, onChange }) => (
-  <div className="space-y-2">
-    <div className="flex justify-between items-center text-[10px] font-bold">
-      <div className="flex items-center gap-2 text-slate-400">{icon} {label}</div>
-      <div className="tabular-nums text-white">{val} {unit}</div>
-    </div>
-    <input type="range" min={min} max={max} step={step} value={val} onChange={e => onChange(parseFloat(e.target.value))} className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-blue-500" />
-  </div>
-);
-
-const SymptomBtn = ({ active, label, onClick }) => (
-  <button onClick={onClick} className={`w-full text-left p-3 rounded-xl border text-[11px] font-bold transition-all flex justify-between items-center ${active ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'border-slate-800 text-slate-500 hover:border-slate-600'}`}>
-    {label}
-    {active && <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></div>}
-  </button>
-);
+const Bot = ({ className }) => <Stethoscope className={className} />;
