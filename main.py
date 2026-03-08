@@ -1,52 +1,43 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from backend2 import ClinicalAI, CloudManager
 import uvicorn
 import os
+from backend2 import ClinicalAI
 
-app = FastAPI(title="XAI Sentinel AI Server")
+app = FastAPI(title="XAI Elite Clinical Backend")
 
-# Enable CORS for the React Website
+# ENABLE CORS FOR PRODUCTION
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Replace with your Vercel URL once deployed
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize Engines
+# Initialize XGBoost & SHAP engine
 ai_engine = ClinicalAI()
-# Note: CloudManager requires service_account.json to exist
-try:
-    cloud_engine = CloudManager()
-except Exception as e:
-    print(f"Cloud Warning: {e}. Check service_account.json")
-    cloud_engine = None
 
-class AssessmentRequest(BaseModel):
-    userId: str
-    appId: str
+class PatientData(BaseModel):
     vitals: dict
-    symptoms: dict
+    symptoms: dict = {}
+    userId: str = None
+    appId: str = "xai-pro-elite-v5"
 
 @app.get("/")
-async def health():
-    return {"status": "online", "engine": "XGBoost + SHAP active"}
+def root():
+    return {"status": "XAI Elite Online", "engine": "XGBoost + SHAP Integrated"}
 
 @app.post("/analyze")
-async def analyze_patient(req: AssessmentRequest):
+async def analyze_patient(data: PatientData):
     try:
-        # 1. Run AI Inference
-        results = ai_engine.predict_with_xai(req.vitals, req.symptoms)
-        
-        # 2. Sync to Cloud (If configured)
-        if cloud_engine:
-            cloud_engine.sync_assessment(req.userId, req.appId, results)
-            
+        # Calculate Risk Probability and SHAP Values
+        results = ai_engine.predict_with_xai(data.vitals, data.symptoms)
         return results
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Server Error: {e}")
+        raise HTTPException(status_code=500, detail="Clinical Logic Failure")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
